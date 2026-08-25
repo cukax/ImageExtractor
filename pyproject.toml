@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.poetry]
+# This is a runnable application (python main.py), not an importable library,
+# and there is no ./imageextractor package directory for Poetry to install.
+# package-mode = false tells Poetry to manage dependencies only.
+package-mode = false
+
+[project]
+name = "ImageExtractor"
+version = "1.0.0"
+description = "Provider agnostic ImageExtractor built with LangGraph and Hexagonal Architecture"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.60",
+    "langgraph-checkpoint>=2.0.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "opencv-python-headless>=4.9",
+    "pillow>=10.3",
+    "numpy>=1.26",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.40"]
+anthropic = ["anthropic>=0.34"]
+azure = ["azure-ai-documentintelligence>=1.0.0"]
+aws = ["boto3>=1.34"]
+google = ["google-cloud-documentai>=2.29"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ImageExtractor = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

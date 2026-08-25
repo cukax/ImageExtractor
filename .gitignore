@@ -1,0 +1,112 @@
+# ============================================================================
+# Python
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+wheels/
+sdist/
+MANIFEST
+pip-wheel-metadata/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ============================================================================
+# Testing, coverage & type checking
+# ============================================================================
+.pytest_cache/
+.cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+cython_debug/
+
+# ============================================================================
+# Environments & dependency managers
+# ============================================================================
+.env
+.env.*
+!.env.example
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+__pypackages__/
+
+# Poetry: poetry.lock IS committed on purpose for reproducible installs
+# (see https://python-poetry.org/docs/basic-usage/#committing-your-poetrylock-file-to-version-control).
+# Only the local virtualenv above is ignored.
+
+# ============================================================================
+# Notebooks
+# ============================================================================
+.ipynb_checkpoints/
+
+# ============================================================================
+# IDE / editor
+# ============================================================================
+.idea/
+.vscode/
+*.iml
+.spyderproject
+.spyproject
+.ropeproject
+
+# JetBrains Junie AI agent local state
+.junie/
+
+# ============================================================================
+# OS cruft
+# ============================================================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.directory
+
+# ============================================================================
+# Project specific
+# ============================================================================
+# Local test documents (identity documents / invoices are PII — never commit).
+samples/
+*.log
+
+# LangGraph checkpoint databases, if a file-backed checkpointer is used locally.
+*.sqlite3
+checkpoints/

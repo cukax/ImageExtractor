@@ -1,0 +1,21 @@
+# --- Core runtime ---------------------------------------------------------
+langgraph>=0.2.60
+langgraph-checkpoint>=2.0.0
+pydantic>=2.7
+pydantic-settings>=2.3
+opencv-python-headless>=4.9
+pillow>=10.3
+numpy>=1.26
+httpx>=0.27
+
+# --- Optional provider SDKs ------------------------------------------------
+# Install only the ones matching EXTRACTOR_PROVIDER and VLM_PROVIDER.
+# Every adapter imports its SDK lazily, so an uninstalled provider costs nothing.
+openai>=1.40                         # VLM_PROVIDER=openai
+anthropic>=0.34                      # VLM_PROVIDER=anthropic
+azure-ai-documentintelligence>=1.0.0 # EXTRACTOR_PROVIDER=azure
+boto3>=1.34                          # EXTRACTOR_PROVIDER=aws
+google-cloud-documentai>=2.29        # EXTRACTOR_PROVIDER=google
+
+# --- Development -----------------------------------------------------------
+pytest>=8.0
