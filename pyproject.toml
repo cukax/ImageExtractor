@@ -25,12 +25,14 @@ dependencies = [
     "httpx>=0.27",
     "truststore (>=0.10.4,<0.11.0)",
     "langgraph-checkpoint-sqlite (>=3.1.1,<4.0.0)",
+    "pymupdf (>=1.24,<2.0)",
 ]
 
 [project.optional-dependencies]
 openai = ["openai>=1.40"]
 anthropic = ["anthropic>=0.34"]
-azure = ["azure-ai-documentintelligence>=1.0.0"]
+azure = ["azure-ai-documentintelligence>=1.0.0", "azure-identity>=1.17"]
+azure-foundry = ["openai>=1.40", "azure-identity>=1.17"]
 aws = ["boto3>=1.34"]
 google = ["google-cloud-documentai>=2.29"]
 dev = ["pytest>=8.0"]

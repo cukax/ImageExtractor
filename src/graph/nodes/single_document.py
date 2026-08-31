@@ -14,13 +14,15 @@ from langgraph.graph import END
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
-from ..domain.models import BoundingBox, get_schema_for
-from ..domain.policy import WorkflowPolicy
-from ..domain.preprocessing import crop_region, preprocess_image
-from ..domain.state import DocumentStatus, OCRState
-from ..domain.validation_tools import expected_format_for, validate_document
-from ..ports.extractor_port import DocumentExtractorPort, ExtractionError
-from ..ports.vlm_port import UNREADABLE_TOKEN, VLMProviderError, VLMProviderPort
+from ...domain.models import BoundingBox, get_schema_for
+from ...domain.policy import WorkflowPolicy
+from ...domain.preprocessing import crop_region, preprocess_image
+from ...domain.state import DocumentStatus, OCRState
+from ...domain.validation_tools import validate_document
+from ...ports.extractor_port import DocumentExtractorPort, ExtractionError
+from ...ports.vlm_port import UNREADABLE_TOKEN, VLMProviderError, VLMProviderPort
+from ._shared import build_error_context as _build_error_context
+from ._shared import renormalize as _renormalize
 
 LOGGER = logging.getLogger(__name__)
 
@@ -272,40 +274,6 @@ def build_crop_and_vlm_retry_node(
         }
 
     return crop_and_vlm_retry_node
-
-
-def _build_error_context(
-    doc_type: str,
-    field_name: str,
-    validation_errors: dict[str, str],
-) -> str:
-    """Compose the error context handed to the VLM.
-
-    The documented expected format is appended to the raw validation message:
-    telling the model what a correct value looks like measurably reduces the
-    number of second failures.
-    """
-    message = validation_errors.get(field_name, "The extracted value failed validation.")
-    expected_format = expected_format_for(doc_type, field_name)
-    if expected_format and expected_format not in message:
-        return f"{message} The expected format is {expected_format}."
-    return message
-
-
-def _renormalize(doc_type: str, extracted_data: dict[str, Any]) -> dict[str, Any]:
-    """Re-run the schema validators over the patched data.
-
-    A value returned by the VLM is raw text, so pushing it back through the
-    Pydantic schema restores the invariants the extraction node established
-    (uppercase codes, parsed amounts). A failure here is not fatal: the raw
-    values simply reach the validation node unchanged.
-    """
-    schema_cls = get_schema_for(doc_type)
-    try:
-        return schema_cls.from_flat_dict(extracted_data).to_flat_dict()
-    except ValidationError as error:
-        LOGGER.warning("Could not renormalize the repaired data: %s", error)
-        return extracted_data
 
 
 # --------------------------------------------------------------------------- #

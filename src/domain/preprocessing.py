@@ -52,6 +52,27 @@ class PreprocessingConfig:
     roi_max_upscale: float = 4.0
     """Upper bound on the ROI upscale factor, to avoid pure interpolation noise."""
 
+    # --- Targeted ROI enhancement (dossier worker retry) --------------------
+    # The chain below is applied only to a cropped patch, never to a whole page.
+    # It is far more aggressive than the page level enhancement precisely because
+    # the region is tiny: the cost is negligible and the payoff is a legible
+    # glyph on the one field that already failed validation once.
+    roi_upscale_factor: float = 2.5
+    """Bicubic magnification applied to the crop before any filtering."""
+
+    roi_denoise_strength: float = 7.0
+    """Luminance strength of the Fast Non-Local Means denoiser."""
+
+    roi_denoise_color_strength: float = 7.0
+    """Chrominance strength of the Fast Non-Local Means denoiser."""
+
+    roi_clahe_clip_limit: float = 3.0
+    """CLAHE clip limit for a crop; higher than the page level value on purpose."""
+
+    roi_clahe_tile_grid_size: int = 8
+    roi_enhance_unsharp_amount: float = 1.0
+    roi_enhance_unsharp_sigma: float = 1.5
+
     @property
     def blur_rejection_threshold(self) -> float:
         """Variance below which the document is rejected outright (fail fast)."""
@@ -167,6 +188,27 @@ def apply_clahe(matrix: np.ndarray, clip_limit: float = 2.0, tile_grid_size: int
     )
     equalized = clahe.apply(lightness)
     return cv2.cvtColor(cv2.merge((equalized, green_red, blue_yellow)), cv2.COLOR_LAB2BGR)
+
+
+def denoise(
+    matrix: np.ndarray,
+    strength: float = 7.0,
+    color_strength: float = 7.0,
+) -> np.ndarray:
+    """Remove sensor and compression noise with Fast Non-Local Means.
+
+    Applied after magnification and before contrast equalization: CLAHE amplifies
+    whatever is left in the image, so denoising first is what stops it from
+    turning JPEG grain into fake ink.
+    """
+    return cv2.fastNlMeansDenoisingColored(
+        matrix,
+        None,
+        h=float(strength),
+        hColor=float(color_strength),
+        templateWindowSize=7,
+        searchWindowSize=21,
+    )
 
 
 def resize_max_dimension(matrix: np.ndarray, max_dimension: int) -> np.ndarray:
@@ -291,3 +333,69 @@ def crop_region(
             )
 
     return encode_png(crop)
+
+
+def enhance_roi_patch(
+    patch_bytes: bytes,
+    config: Optional[PreprocessingConfig] = None,
+) -> bytes:
+    """Run the targeted enhancement chain over an already cropped region.
+
+    Bicubic rescaling, Fast Non-Local Means denoising, CLAHE and unsharp masking,
+    in that order. The order is the whole recipe: magnify first so the filters
+    have sub-pixel detail to work with, denoise before equalizing so contrast is
+    not applied to grain, and sharpen last so the unsharp mask acts on clean,
+    equalized edges.
+    """
+    config = config or PreprocessingConfig()
+    matrix = pil_to_bgr(load_image(patch_bytes))
+    height, width = matrix.shape[:2]
+
+    if config.roi_upscale_factor > 1.0:
+        matrix = cv2.resize(
+            matrix,
+            (
+                max(1, int(round(width * config.roi_upscale_factor))),
+                max(1, int(round(height * config.roi_upscale_factor))),
+            ),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+    matrix = denoise(matrix, config.roi_denoise_strength, config.roi_denoise_color_strength)
+    matrix = apply_clahe(matrix, config.roi_clahe_clip_limit, config.roi_clahe_tile_grid_size)
+    matrix = unsharp_mask(
+        matrix,
+        config.roi_enhance_unsharp_amount,
+        config.roi_enhance_unsharp_sigma,
+    )
+    return encode_png(matrix)
+
+
+def crop_and_enhance_region(
+    image_bytes: bytes,
+    box: BoundingBox,
+    config: Optional[PreprocessingConfig] = None,
+) -> bytes:
+    """Crop the padded region of interest and enhance it for a targeted re-read.
+
+    Composition of :func:`crop_region` and :func:`enhance_roi_patch`, which is the
+    exact payload the dossier worker hands to the VLM when a field fails
+    validation.
+    """
+    config = config or PreprocessingConfig()
+    return enhance_roi_patch(crop_region(image_bytes, box, config), config)
+
+
+def downscale_for_classification(
+    image_bytes: bytes,
+    max_dimension: int = 768,
+    quality: int = 80,
+) -> bytes:
+    """Shrink a page to the resolution the page classifier needs.
+
+    Classifying a page is a layout question, not a transcription one, so the full
+    300 DPI raster is pure waste: it multiplies the image token count of the most
+    frequent call in a dossier run without changing the answer.
+    """
+    matrix = pil_to_bgr(load_image(image_bytes))
+    return encode_jpeg(resize_max_dimension(matrix, max_dimension), quality)

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from ....domain.models import BoundingBox, ExtractedField, ExtractionResult, normalize_key
 from ....ports.extractor_port import DocumentExtractorPort, ExtractionError
 
 LOGGER = logging.getLogger(__name__)
+
+#: Token audience for Azure AI services, used when authenticating with Entra ID.
+DEFAULT_CREDENTIAL_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 #: Document type to prebuilt model mapping. Custom trained models are plugged in
 #: through configuration without touching this adapter.
@@ -49,6 +52,36 @@ def _read(source: Any, key: str, default: Any = None) -> Any:
         return default
 
 
+def _normalize_polygon(
+    polygon: Sequence[float],
+    page_width: float,
+    page_height: float,
+    page: int = 0,
+) -> BoundingBox:
+    """Translate an Azure 8-point polygon into a normalized bounding box.
+
+    Azure reports geometry as a flat ``[x1, y1, x2, y2, x3, y3, x4, y4]`` list of
+    the four corners, expressed in the same unit as the page dimensions (inches
+    for a PDF, pixels for an image). The domain works exclusively in normalized
+    [0.0, 1.0] coordinates so a box survives the resizing done during
+    preprocessing, which is what lets one box crop either the optimized image or
+    the full resolution original.
+
+    Coordinates outside the page are clamped rather than rejected: a rotated scan
+    routinely produces a corner a hair beyond the edge, and a clamped box still
+    crops correctly while a rejected one would lose the retry entirely.
+
+    Raises:
+        ValueError: When the polygon is malformed or the page has no area.
+    """
+    return BoundingBox.from_polygon(
+        polygon=[float(coordinate) for coordinate in polygon],
+        page_width=page_width,
+        page_height=page_height,
+        page=page,
+    )
+
+
 class AzureDocumentIntelligenceAdapter(DocumentExtractorPort):
     """Implements DocumentExtractorPort on top of Azure AI Document Intelligence."""
 
@@ -57,21 +90,41 @@ class AzureDocumentIntelligenceAdapter(DocumentExtractorPort):
     def __init__(
         self,
         endpoint: str,
-        api_key: str,
+        api_key: Optional[str] = None,
         *,
         model_by_doc_type: Optional[dict[str, str]] = None,
         fallback_model: str = DEFAULT_FALLBACK_MODEL,
+        credential_scope: str = DEFAULT_CREDENTIAL_SCOPE,
     ) -> None:
-        if not endpoint or not api_key:
+        """Configure the adapter.
+
+        Args:
+            endpoint: Resource endpoint, always required.
+            api_key: Optional. Leave it empty to authenticate secretlessly with
+                Microsoft Entra ID through ``DefaultAzureCredential``, which
+                resolves a Managed Identity on a deployed host and the
+                developer's ``az login`` session locally.
+            model_by_doc_type: Overrides of the prebuilt model mapping.
+            fallback_model: Model used for an unregistered document type.
+            credential_scope: Token audience used for Entra ID authentication.
+        """
+        if not endpoint:
             raise ExtractionError(
                 self.provider_name,
-                "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and _KEY are both required.",
+                "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT is required.",
             )
         self._endpoint = endpoint
-        self._api_key = api_key
+        self._api_key = api_key or None
         self._model_by_doc_type = {**DEFAULT_MODEL_BY_DOC_TYPE, **(model_by_doc_type or {})}
         self._fallback_model = fallback_model
+        self._credential_scope = credential_scope
         self._client: Any = None
+        self._credential: Any = None
+
+    @property
+    def uses_managed_identity(self) -> bool:
+        """True when the adapter authenticates through Entra ID rather than a key."""
+        return not self._api_key
 
     # -- Client management -------------------------------------------------- #
     @property
@@ -80,7 +133,6 @@ class AzureDocumentIntelligenceAdapter(DocumentExtractorPort):
         if self._client is None:
             try:
                 from azure.ai.documentintelligence import DocumentIntelligenceClient
-                from azure.core.credentials import AzureKeyCredential
             except ImportError as error:  # pragma: no cover - environment dependent
                 raise ExtractionError(
                     self.provider_name,
@@ -89,9 +141,37 @@ class AzureDocumentIntelligenceAdapter(DocumentExtractorPort):
                 ) from error
             self._client = DocumentIntelligenceClient(
                 endpoint=self._endpoint,
-                credential=AzureKeyCredential(self._api_key),
+                credential=self._build_credential(),
             )
         return self._client
+
+    def _build_credential(self) -> Any:
+        """Resolve the credential: an explicit key, or Entra ID by default."""
+        if self._api_key:
+            from azure.core.credentials import AzureKeyCredential
+
+            LOGGER.warning(
+                "Authenticating to Document Intelligence with an API key; prefer a "
+                "Managed Identity by leaving AZURE_DOCUMENT_INTELLIGENCE_KEY empty."
+            )
+            return AzureKeyCredential(self._api_key)
+
+        try:
+            from azure.identity import DefaultAzureCredential
+        except ImportError as error:  # pragma: no cover - environment dependent
+            raise ExtractionError(
+                self.provider_name,
+                "No API key was configured and the azure-identity package is not "
+                "installed. Run: pip install azure-identity",
+            ) from error
+
+        LOGGER.info(
+            "Document Intelligence authentication resolved through "
+            "DefaultAzureCredential (scope %s)",
+            self._credential_scope,
+        )
+        self._credential = DefaultAzureCredential()
+        return self._credential
 
     def resolve_model_id(self, doc_type: str) -> str:
         """Resolve the Azure model id bound to a business document type."""
@@ -187,8 +267,8 @@ class AzureDocumentIntelligenceAdapter(DocumentExtractorPort):
             page_size = page_sizes.get(page_number)
             if polygon and page_size:
                 try:
-                    bounding_box = BoundingBox.from_polygon(
-                        polygon=[float(coordinate) for coordinate in polygon],
+                    bounding_box = _normalize_polygon(
+                        polygon=polygon,
                         page_width=page_size[0],
                         page_height=page_size[1],
                         page=page_number - 1,
@@ -205,7 +285,10 @@ class AzureDocumentIntelligenceAdapter(DocumentExtractorPort):
         )
 
     def close(self) -> None:
-        """Close the underlying Azure client."""
+        """Close the underlying Azure client and any credential it borrowed."""
         if self._client is not None and hasattr(self._client, "close"):
             self._client.close()
         self._client = None
+        if self._credential is not None and hasattr(self._credential, "close"):
+            self._credential.close()
+        self._credential = None

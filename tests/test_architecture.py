@@ -104,12 +104,15 @@ def test_every_adapter_implements_its_port() -> None:
         GoogleDocAIAdapter,
         NativeVLMExtractorAdapter,
     )
+    from src.infrastructure.adapters.processors import PyMuPDFAdapter
     from src.infrastructure.adapters.vlm import (
         AnthropicVLMAdapter,
+        AzureAIFoundryVLMAdapter,
         OllamaVLMAdapter,
         OpenAIVLMAdapter,
     )
     from src.ports.extractor_port import DocumentExtractorPort
+    from src.ports.pdf_port import PDFProcessorPort
     from src.ports.vlm_port import VLMProviderPort
 
     extractors = (
@@ -118,20 +121,74 @@ def test_every_adapter_implements_its_port() -> None:
         GoogleDocAIAdapter,
         NativeVLMExtractorAdapter,
     )
-    vlm_providers = (OpenAIVLMAdapter, AnthropicVLMAdapter, OllamaVLMAdapter)
+    vlm_providers = (
+        OpenAIVLMAdapter,
+        AnthropicVLMAdapter,
+        OllamaVLMAdapter,
+        AzureAIFoundryVLMAdapter,
+    )
 
     for adapter in extractors:
         assert issubclass(adapter, DocumentExtractorPort)
         assert adapter.provider_name != "unknown"
     for adapter in vlm_providers:
         assert issubclass(adapter, VLMProviderPort)
+    assert issubclass(PyMuPDFAdapter, PDFProcessorPort)
+    assert PyMuPDFAdapter.provider_name != "unknown"
 
 
 def test_the_ports_cannot_be_instantiated_directly() -> None:
     from src.ports.extractor_port import DocumentExtractorPort
+    from src.ports.pdf_port import PDFProcessorPort
     from src.ports.vlm_port import VLMProviderPort
 
     with pytest.raises(TypeError):
         DocumentExtractorPort()  # type: ignore[abstract]
     with pytest.raises(TypeError):
         VLMProviderPort()  # type: ignore[abstract]
+    with pytest.raises(TypeError):
+        PDFProcessorPort()  # type: ignore[abstract]
+
+
+def test_the_dossier_engine_never_calls_interrupt() -> None:
+    """The headless guarantee, enforced rather than documented.
+
+    Every dossier node must terminate on its own. A single ``interrupt()``
+    anywhere in the worker or orchestrator path would silently reintroduce a
+    blocking run, which is exactly what the specification forbids.
+    """
+    dossier_modules = [
+        SOURCE_ROOT / "graph" / "orchestrator.py",
+        SOURCE_ROOT / "graph" / "worker_graph.py",
+        SOURCE_ROOT / "graph" / "edges.py",
+        *[
+            path
+            for path in _python_files("graph/nodes")
+            # The single document workflow is deliberately human-in-the-loop and
+            # is not part of the dossier path.
+            if path.name != "single_document.py"
+        ],
+    ]
+
+    offenders = [path.name for path in dossier_modules if _calls_interrupt(path)]
+
+    assert not offenders, f"The dossier engine must stay headless: {offenders}"
+
+
+def _calls_interrupt(path: Path) -> bool:
+    """True when the module actually calls interrupt(), prose aside.
+
+    A substring search would flag every docstring explaining why the node does
+    not interrupt, so the check walks the syntax tree instead.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            name = getattr(function, "id", None) or getattr(function, "attr", None)
+            if name == "interrupt":
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "langgraph.types":
+            if any(alias.name == "interrupt" for alias in node.names):
+                return True
+    return False

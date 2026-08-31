@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from ....ports.vlm_port import VLMProviderError
 from .base import BaseVLMAdapter, detect_media_type, encode_base64
@@ -28,6 +28,7 @@ class AnthropicVLMAdapter(BaseVLMAdapter):
         max_tokens: int = 1024,
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
+        classifier_model: Optional[str] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -35,6 +36,7 @@ class AnthropicVLMAdapter(BaseVLMAdapter):
             max_tokens=max_tokens,
             temperature=temperature,
             timeout_seconds=timeout_seconds,
+            classifier_model=classifier_model,
         )
         if not api_key:
             raise VLMProviderError("anthropic", "ANTHROPIC_API_KEY is required.")
@@ -63,32 +65,33 @@ class AnthropicVLMAdapter(BaseVLMAdapter):
         self,
         system_prompt: str,
         user_prompt: str,
-        image_bytes: bytes,
+        images: Sequence[bytes],
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> str:
-        """Send one multimodal Messages API request."""
+        """Send one multimodal Messages API request carrying every page."""
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": detect_media_type(image_bytes),
+                    "data": encode_base64(image_bytes),
+                },
+            }
+            for image_bytes in images
+        ]
+        # The text block goes last: Claude reads images better when the question
+        # follows the material it is about.
+        content.append({"type": "text", "text": user_prompt})
+
         try:
             response = self.client.messages.create(
-                model=self.model,
+                model=model or self.model,
                 max_tokens=max_tokens or self.max_tokens,
                 temperature=self.temperature,
                 system=system_prompt,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": detect_media_type(image_bytes),
-                                    "data": encode_base64(image_bytes),
-                                },
-                            },
-                            {"type": "text", "text": user_prompt},
-                        ],
-                    }
-                ],
+                messages=[{"role": "user", "content": content}],
             )
         except Exception as error:  # noqa: BLE001 - SDK exceptions are wrapped by design
             raise VLMProviderError(self.provider_name, str(error)) from error

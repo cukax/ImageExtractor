@@ -11,9 +11,14 @@ import base64
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from ....ports.vlm_port import UNREADABLE_TOKEN, VLMProviderError, VLMProviderPort
+from ....ports.vlm_port import (
+    UNKNOWN_PAGE_TYPE,
+    UNREADABLE_TOKEN,
+    VLMProviderError,
+    VLMProviderPort,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -152,6 +157,7 @@ class BaseVLMAdapter(VLMProviderPort):
         max_tokens: int = 1024,
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
+        classifier_model: Optional[str] = None,
     ) -> None:
         self.model = model
         self.provider_name = provider_name
@@ -160,16 +166,28 @@ class BaseVLMAdapter(VLMProviderPort):
         # task, and sampling diversity is pure downside here.
         self.temperature = temperature
         self.timeout_seconds = timeout_seconds
+        # Page classification is the most frequent call of a dossier run and the
+        # least demanding one, so it gets its own, cheaper model when configured.
+        self.classifier_model = classifier_model or model
 
     # -- Hooks implemented by each concrete adapter ------------------------- #
     def _invoke(
         self,
         system_prompt: str,
         user_prompt: str,
-        image_bytes: bytes,
+        images: Sequence[bytes],
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> str:
-        """Send one multimodal request and return the raw text response."""
+        """Send one multimodal request and return the raw text response.
+
+        Args:
+            system_prompt: Role instruction.
+            user_prompt: Task instruction.
+            images: One or more images, in the order the prompt refers to them.
+            max_tokens: Completion budget, defaulting to the adapter's.
+            model: Model or deployment override, used by the cheap classifier path.
+        """
         raise NotImplementedError
 
     # -- Port implementation ------------------------------------------------ #
@@ -183,7 +201,7 @@ class BaseVLMAdapter(VLMProviderPort):
         raw_response = self._invoke(
             system_prompt=ROI_RETRY_SYSTEM_PROMPT,
             user_prompt=build_roi_retry_user_prompt(field_name, error_context),
-            image_bytes=crop_bytes,
+            images=[crop_bytes],
             # A single field never needs a long completion, and a tight budget
             # discourages the model from adding commentary.
             max_tokens=min(self.max_tokens, 256),
@@ -203,14 +221,40 @@ class BaseVLMAdapter(VLMProviderPort):
         doc_type: str,
         json_schema: dict[str, Any],
         layout_hints: Optional[str] = None,
+        request_bounding_boxes: bool = False,
     ) -> str:
         """Extract a whole document in a single call (prompt template A)."""
+        if not image_bytes:
+            raise VLMProviderError(self.provider_name, "The document payload is empty.")
+        return self.analyze_document_pages(
+            images_bytes=[image_bytes],
+            doc_type=doc_type,
+            json_schema=json_schema,
+            layout_hints=layout_hints,
+            request_bounding_boxes=request_bounding_boxes,
+        )
+
+    def analyze_document_pages(
+        self,
+        images_bytes: Sequence[bytes],
+        doc_type: str,
+        json_schema: dict[str, Any],
+        layout_hints: Optional[str] = None,
+        request_bounding_boxes: bool = False,
+    ) -> str:
+        """Extract a multi page document in a single call (prompt template A).
+
+        Every page goes into one request rather than one request per page: a
+        field printed only on the back of a card can then be reconciled with the
+        name printed only on the front, which two independent calls could not do.
+        """
         from .prompts import (
             PRIMARY_EXTRACTION_SYSTEM_PROMPT,
             build_primary_extraction_user_prompt,
         )
 
-        if not image_bytes:
+        pages = [page for page in images_bytes if page]
+        if not pages:
             raise VLMProviderError(self.provider_name, "The document payload is empty.")
 
         return self._invoke(
@@ -219,8 +263,35 @@ class BaseVLMAdapter(VLMProviderPort):
                 doc_type=doc_type,
                 json_schema=json_schema,
                 layout_hints=layout_hints,
-                request_bounding_boxes=getattr(self, "request_bounding_boxes", False),
+                request_bounding_boxes=request_bounding_boxes,
+                page_count=len(pages),
             ),
-            image_bytes=image_bytes,
+            images=pages,
             max_tokens=self.max_tokens,
         )
+
+    def classify_page(self, image_bytes: bytes, allowed_types: Sequence[str]) -> str:
+        """Assign a page type token to one page (prompt template C)."""
+        from .prompts import (
+            PAGE_CLASSIFICATION_SYSTEM_PROMPT,
+            build_page_classification_user_prompt,
+        )
+
+        if not image_bytes:
+            raise VLMProviderError(self.provider_name, "The page payload is empty.")
+
+        raw_response = self._invoke(
+            system_prompt=PAGE_CLASSIFICATION_SYSTEM_PROMPT,
+            user_prompt=build_page_classification_user_prompt(allowed_types),
+            images=[image_bytes],
+            # A label is a handful of tokens; anything longer is commentary.
+            max_tokens=32,
+            model=self.classifier_model,
+        )
+        label = sanitize_scalar_response(raw_response)
+        if label == UNREADABLE_TOKEN:
+            # The scalar sanitizer reports an empty answer with the OCR sentinel,
+            # which means nothing here: an unclassifiable page is simply unknown.
+            return UNKNOWN_PAGE_TYPE
+        LOGGER.info("Page classified by %s as %r", self.provider_name, label)
+        return label

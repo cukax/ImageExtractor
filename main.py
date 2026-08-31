@@ -1,9 +1,17 @@
-"""Command line entry point for the ImageExtractor workflow.
+"""Command line entry point for the ImageExtractor workflows.
+
+Two modes, sharing one composition root:
+
+* Single document, human-in-the-loop. Escalates to an operator and can be resumed
+  from a later invocation.
+* Dossier, headless. Splits a multi-document PDF, processes every document in
+  parallel and always returns a terminal report.
 
 Examples:
     python main.py --image ./samples/ine_front.jpg --doc-type INE
     python main.py --image ./samples/invoice.png --doc-type Invoice --thread-id inv-001
     python main.py --resume inv-001 --approve --correct total_amount=1432.09
+    python main.py --dossier ./samples/kyc.pdf --dossier-id DOSSIER_2026_99482
 """
 
 from __future__ import annotations
@@ -28,10 +36,13 @@ from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from src.domain.orchestrator_state import DossierStatus
 from src.domain.state import DocumentStatus
+from src.graph.orchestrator import compile_dossier_workflow, run_dossier
 from src.graph.workflow import compile_workflow, resume_document, run_document
 from src.infrastructure.config import build_dependencies, get_settings
 from src.ports.extractor_port import ExtractionError
+from src.ports.pdf_port import PDFProcessingError
 from src.ports.vlm_port import VLMProviderError
 
 LOGGER = logging.getLogger("ImageExtractor")
@@ -115,12 +126,22 @@ def _report_interrupt(compiled_workflow: Any, thread_id: str) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     """Declare the command line interface."""
-    parser = argparse.ArgumentParser(description="Run the ImageExtractor workflow.")
-    parser.add_argument("--image", type=Path, help="Path to the document image.")
+    parser = argparse.ArgumentParser(description="Run the ImageExtractor workflows.")
+    parser.add_argument("--image", type=Path, help="Path to a single document image.")
+    parser.add_argument(
+        "--dossier",
+        type=Path,
+        help="Path to a multi-document PDF, processed headlessly in parallel.",
+    )
+    parser.add_argument(
+        "--dossier-id",
+        default=None,
+        help="Identifier prefixed to every doc_id; generated when omitted.",
+    )
     parser.add_argument(
         "--doc-type",
         default="INE",
-        help="Document type: INE, Invoice, Form, ...",
+        help="Document type: INE, Invoice, Form, ... (single document mode only).",
     )
     parser.add_argument(
         "--thread-id",
@@ -139,23 +160,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_dossier_mode(dependencies: Any, dossier_path: Path, dossier_id: str | None) -> int:
+    """Run a dossier end to end and print the master JSON contract.
+
+    No checkpointer is passed: the dossier engine is headless by construction and
+    never suspends, so there is nothing to resume and nothing to persist between
+    invocations.
+    """
+    if not dossier_path.is_file():
+        raise SystemExit(f"Dossier not found: {dossier_path}")
+
+    workflow = compile_dossier_workflow(dependencies)
+    report = run_dossier(
+        workflow,
+        pdf_bytes=dossier_path.read_bytes(),
+        dossier_id=dossier_id,
+    )
+
+    print(json.dumps(report.to_json_dict(), indent=2, ensure_ascii=False, default=str))
+    return 0 if report.dossier_status == DossierStatus.COMPLETED else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI."""
     args = build_parser().parse_args(argv)
     settings = get_settings()
     _configure_logging(settings.log_level)
 
-    if not args.image and not args.resume:
-        build_parser().error("Either --image or --resume is required.")
+    if not args.image and not args.resume and not args.dossier:
+        build_parser().error("One of --image, --dossier or --resume is required.")
 
     try:
         dependencies = build_dependencies(settings)
-    except (ExtractionError, VLMProviderError) as error:
+    except (ExtractionError, PDFProcessingError, VLMProviderError) as error:
         # A missing credential is a configuration problem, not a crash: report
         # it as one line instead of a stack trace.
         raise SystemExit(f"Configuration error: {error}") from error
 
     try:
+        if args.dossier:
+            return _run_dossier_mode(dependencies, args.dossier, args.dossier_id)
+
         with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
             workflow = compile_workflow(dependencies, checkpointer=checkpointer)
 

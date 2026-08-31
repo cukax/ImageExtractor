@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
-from src.domain.models import IDCardSchema, InvoiceSchema, get_schema_for, parse_decimal
+from src.domain.models import (
+    IDCardSchema,
+    InvoiceSchema,
+    ProofOfAddressSchema,
+    get_schema_for,
+    parse_decimal,
+)
 from src.domain.validation_tools import (
     check_invoice_line_items,
     check_invoice_totals,
@@ -177,3 +184,88 @@ def test_the_registry_resolves_the_typed_schemas() -> None:
 def test_expected_formats_are_available_for_the_vlm_prompt() -> None:
     assert "CURP" in (expected_format_for("INE", "curp") or "")
     assert expected_format_for("INE", "unknown_field") is None
+
+
+# --------------------------------------------------------------------------- #
+# Dossier document types
+# --------------------------------------------------------------------------- #
+def test_the_registry_resolves_the_dossier_document_types() -> None:
+    assert get_schema_for("PROOF_OF_ADDRESS") is ProofOfAddressSchema
+    # A front and a back merged into one logical document still parse with the
+    # very same identity card schema.
+    assert get_schema_for("INE_COMBINED") is IDCardSchema
+    assert get_schema_for("MEXICAN_CEDULA") is IDCardSchema
+
+
+def test_an_id_card_validates_under_its_dossier_token() -> None:
+    # The clustering step labels the document INE_COMBINED, so the same rules
+    # that police an "INE" must be registered for it too.
+    assert validate_document("INE_COMBINED", VALID_ID_CARD) == {}
+
+
+VALID_PROOF_OF_ADDRESS = {
+    "holder_name": "MARIA GOMEZ CRUZ",
+    "service_provider": "Comision Federal de Electricidad",
+    "address": "Av Insurgentes Sur 1234, Col Del Valle",
+    "postal_code": "03100",
+    "issue_date": "15/01/2026",
+}
+
+
+def test_a_consistent_proof_of_address_validates() -> None:
+    assert validate_document("PROOF_OF_ADDRESS", VALID_PROOF_OF_ADDRESS) == {}
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("postal_code", "3100"),
+        ("postal_code", "ABCDE"),
+        # A truncated address is the most common silent OCR failure here.
+        ("address", "Av Ins"),
+        ("issue_date", "not a date"),
+        ("holder_name", "X"),
+    ],
+)
+def test_a_malformed_proof_of_address_field_is_reported(field: str, bad_value: str) -> None:
+    errors = validate_document(
+        "PROOF_OF_ADDRESS", {**VALID_PROOF_OF_ADDRESS, field: bad_value}
+    )
+
+    assert field in errors
+
+
+def test_a_missing_required_proof_of_address_field_is_reported() -> None:
+    payload = {**VALID_PROOF_OF_ADDRESS}
+    del payload["postal_code"]
+
+    assert "postal_code" in validate_document("PROOF_OF_ADDRESS", payload)
+
+
+def test_an_optional_proof_of_address_field_may_be_absent() -> None:
+    payload = {**VALID_PROOF_OF_ADDRESS}
+    del payload["service_provider"]
+
+    assert validate_document("PROOF_OF_ADDRESS", payload) == {}
+
+
+def test_a_proof_of_address_issued_in_the_future_is_rejected() -> None:
+    future_year = date.today().year + 2
+    errors = validate_document(
+        "PROOF_OF_ADDRESS",
+        {**VALID_PROOF_OF_ADDRESS, "issue_date": f"15/01/{future_year}"},
+    )
+
+    assert "issue_date" in errors
+    assert "future" in errors["issue_date"]
+
+
+def test_the_proof_of_address_schema_normalizes_its_codes() -> None:
+    document = ProofOfAddressSchema.model_validate(
+        {"postal_code": " 031 00 ", "account_number": "abc 123"}
+    )
+
+    # OCR sprinkles whitespace into codes; normalizing here keeps the regex
+    # rules simple.
+    assert document.postal_code == "03100"
+    assert document.account_number == "ABC123"

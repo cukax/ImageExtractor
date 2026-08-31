@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from types import UnionType
-from typing import Any, Optional, Union, get_args, get_origin
+from typing import Any, Optional, Sequence, Union, get_args, get_origin
 
 from ....domain.models import (
     BoundingBox,
@@ -47,6 +47,14 @@ def _json_type_for(annotation: Any) -> str:
     if annotation in (dict,) or origin is dict:
         return "object"
     return "string"
+
+
+def _first_present(payload: dict[str, Any], keys: tuple[str, ...], default: Any) -> Any:
+    """Return the first key present in the payload, or the default."""
+    for key in keys:
+        if key in payload and payload[key] is not None:
+            return payload[key]
+    return default
 
 
 def build_prompt_schema(schema_cls: type[DocumentSchema]) -> dict[str, Any]:
@@ -107,12 +115,15 @@ class NativeVLMExtractorAdapter(DocumentExtractorPort):
         self._vlm_provider = vlm_provider
         # Grounding quality varies enormously between models. When it is off,
         # the retry node falls back to re-reading the whole page.
+        #
+        # The flag is passed on every call rather than stamped onto the provider:
+        # one process legitimately runs two extractors, grounded and ungrounded,
+        # over a single shared provider instance, and provider state would let
+        # whichever was constructed last silently decide for both.
         self._request_bounding_boxes = request_bounding_boxes
         self._layout_hints = {
             normalize_key(key): value for key, value in (layout_hints_by_doc_type or {}).items()
         }
-        # The flag is read by BaseVLMAdapter when it renders prompt template A.
-        setattr(self._vlm_provider, "request_bounding_boxes", request_bounding_boxes)
 
     @property
     def vlm_provider(self) -> VLMProviderPort:
@@ -126,15 +137,34 @@ class NativeVLMExtractorAdapter(DocumentExtractorPort):
     # -- Port implementation ------------------------------------------------ #
     def extract_document(self, image_bytes: bytes, doc_type: str) -> ExtractionResult:
         """Prompt the VLM for every field of the document in a single call."""
+        return self.extract_pages([image_bytes], doc_type)
+
+    def extract_pages(
+        self,
+        images_bytes: Sequence[bytes],
+        doc_type: str,
+    ) -> ExtractionResult:
+        """Prompt the VLM for every field across every page, in a single call.
+
+        This overrides the port's page-by-page default on purpose. A vision model
+        can read a front and a back together and reconcile them; splitting the
+        pages into independent calls would produce two half filled documents and
+        lose exactly the cross-page information the single call recovers.
+        """
+        pages = [page for page in images_bytes if page]
+        if not pages:
+            raise ExtractionError(self.provider_name, "No page was supplied for extraction.")
+
         schema_cls = get_schema_for(doc_type)
         json_schema = build_prompt_schema(schema_cls)
 
         try:
-            raw_response = self._vlm_provider.analyze_full_document(
-                image_bytes=image_bytes,
+            raw_response = self._vlm_provider.analyze_document_pages(
+                images_bytes=pages,
                 doc_type=doc_type,
                 json_schema=json_schema,
                 layout_hints=self.layout_hints_for(doc_type),
+                request_bounding_boxes=self._request_bounding_boxes,
             )
             payload = extract_json_object(raw_response, self.provider_name)
         except VLMProviderError as error:
@@ -142,10 +172,15 @@ class NativeVLMExtractorAdapter(DocumentExtractorPort):
         except Exception as error:  # noqa: BLE001 - defensive, keeps the graph alive
             raise ExtractionError(self.provider_name, str(error)) from error
 
-        return self._build_result(payload, doc_type)
+        return self._build_result(payload, doc_type, page_count=len(pages))
 
     # -- Mapping helpers ---------------------------------------------------- #
-    def _build_result(self, payload: dict[str, Any], doc_type: str) -> ExtractionResult:
+    def _build_result(
+        self,
+        payload: dict[str, Any],
+        doc_type: str,
+        page_count: int = 1,
+    ) -> ExtractionResult:
         """Map the parsed JSON response onto the domain contract."""
         # Some models wrap the answer in a single container key despite the
         # instructions; unwrapping it costs nothing and saves a full retry.
@@ -185,7 +220,7 @@ class NativeVLMExtractorAdapter(DocumentExtractorPort):
             provider=self.provider_name,
             fields=fields,
             structured_extras=structured_extras,
-            page_count=1,
+            page_count=page_count,
             warnings=warnings,
             raw_payload={"vlm_provider": self._vlm_provider.provider_name},
         )
@@ -210,16 +245,22 @@ class NativeVLMExtractorAdapter(DocumentExtractorPort):
         field_name: str,
         warnings: list[str],
     ) -> Optional[BoundingBox]:
-        """Convert a model reported [x, y, w, h] list into a BoundingBox."""
+        """Convert a model reported box into a BoundingBox.
+
+        Both grounding shapes are accepted: the flat ``[x, y, w, h]`` list and the
+        object form the visual grounding prompt asks for, whose corner is named
+        ``x_min`` / ``y_min``. Models mix the two freely, and recovering the
+        geometry is much cheaper than paying for a second extraction call.
+        """
         if not raw_box:
             return None
         try:
             if isinstance(raw_box, dict):
                 raw_box = [
-                    raw_box.get("x", 0.0),
-                    raw_box.get("y", 0.0),
-                    raw_box.get("width", raw_box.get("w", 0.0)),
-                    raw_box.get("height", raw_box.get("h", 0.0)),
+                    _first_present(raw_box, ("x_min", "x", "left"), 0.0),
+                    _first_present(raw_box, ("y_min", "y", "top"), 0.0),
+                    _first_present(raw_box, ("width", "w"), 0.0),
+                    _first_present(raw_box, ("height", "h"), 0.0),
                 ]
             box = BoundingBox.from_tuple([float(value) for value in raw_box][:4])
         except (TypeError, ValueError, IndexError) as error:

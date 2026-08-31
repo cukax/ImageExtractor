@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from ....ports.vlm_port import VLMProviderError
 from .base import BaseVLMAdapter, encode_base64
@@ -28,6 +28,7 @@ class OllamaVLMAdapter(BaseVLMAdapter):
         temperature: float = 0.0,
         timeout_seconds: float = 180.0,
         keep_alive: str = "5m",
+        classifier_model: Optional[str] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -37,6 +38,7 @@ class OllamaVLMAdapter(BaseVLMAdapter):
             # Local inference on CPU or a modest GPU is far slower than a hosted
             # API, so the default timeout is deliberately generous.
             timeout_seconds=timeout_seconds,
+            classifier_model=classifier_model,
         )
         self.host = host.rstrip("/")
         self.keep_alive = keep_alive
@@ -60,12 +62,13 @@ class OllamaVLMAdapter(BaseVLMAdapter):
         self,
         system_prompt: str,
         user_prompt: str,
-        image_bytes: bytes,
+        images: Sequence[bytes],
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> str:
         """Send one multimodal chat request to the Ollama /api/chat endpoint."""
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "stream": False,
             "keep_alive": self.keep_alive,
             "options": {
@@ -78,7 +81,7 @@ class OllamaVLMAdapter(BaseVLMAdapter):
                     "role": "user",
                     "content": user_prompt,
                     # Ollama expects bare base64 strings, without a data URI prefix.
-                    "images": [encode_base64(image_bytes)],
+                    "images": [encode_base64(image_bytes) for image_bytes in images],
                 },
             ],
         }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from ....ports.vlm_port import VLMProviderError
 from .base import BaseVLMAdapter, build_data_uri
@@ -29,6 +29,7 @@ class OpenAIVLMAdapter(BaseVLMAdapter):
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
         image_detail: str = "high",
+        classifier_model: Optional[str] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -36,6 +37,7 @@ class OpenAIVLMAdapter(BaseVLMAdapter):
             max_tokens=max_tokens,
             temperature=temperature,
             timeout_seconds=timeout_seconds,
+            classifier_model=classifier_model,
         )
         if not api_key:
             raise VLMProviderError("openai", "OPENAI_API_KEY is required.")
@@ -70,30 +72,31 @@ class OpenAIVLMAdapter(BaseVLMAdapter):
         self,
         system_prompt: str,
         user_prompt: str,
-        image_bytes: bytes,
+        images: Sequence[bytes],
         max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> str:
-        """Send one multimodal chat completion request."""
+        """Send one multimodal chat completion request carrying every page."""
+        content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": build_data_uri(image_bytes),
+                    "detail": self.image_detail,
+                },
+            }
+            for image_bytes in images
+        )
+
         try:
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model or self.model,
                 temperature=self.temperature,
                 max_tokens=max_tokens or self.max_tokens,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": build_data_uri(image_bytes),
-                                    "detail": self.image_detail,
-                                },
-                            },
-                        ],
-                    },
+                    {"role": "user", "content": content},
                 ],
             )
         except Exception as error:  # noqa: BLE001 - SDK exceptions are wrapped by design

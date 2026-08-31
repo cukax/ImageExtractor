@@ -14,6 +14,8 @@ from .base import (
 from .generic_form import GenericFormSchema
 from .id_card import IDCardSchema
 from .invoice import InvoiceLineItem, InvoiceSchema
+from .page import RenderedPage
+from .proof_of_address import ProofOfAddressSchema
 
 # Canonical document type tokens understood by the workflow.
 DOC_TYPE_ID_CARD = "INE"
@@ -30,9 +32,19 @@ SCHEMA_REGISTRY: dict[str, type[DocumentSchema]] = {
     "iddocument": IDCardSchema,
     "passport": IDCardSchema,
     "driverlicense": IDCardSchema,
+    # Dossier level tokens: a front and a back page merged into one logical
+    # document still parse with the very same identity card schema.
+    "inefront": IDCardSchema,
+    "ineback": IDCardSchema,
+    "inecombined": IDCardSchema,
+    "mexicancedula": IDCardSchema,
+    "cedulaprofesional": IDCardSchema,
     "invoice": InvoiceSchema,
     "factura": InvoiceSchema,
     "receipt": InvoiceSchema,
+    "proofofaddress": ProofOfAddressSchema,
+    "comprobantededomicilio": ProofOfAddressSchema,
+    "utilitybill": ProofOfAddressSchema,
     "form": GenericFormSchema,
     "generic": GenericFormSchema,
 }
@@ -66,6 +78,8 @@ __all__ = [
     "IDCardSchema",
     "InvoiceLineItem",
     "InvoiceSchema",
+    "ProofOfAddressSchema",
+    "RenderedPage",
     "SCHEMA_REGISTRY",
     "get_schema_for",
     "is_known_doc_type",

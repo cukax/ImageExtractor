@@ -7,13 +7,15 @@ opencv-python-headless>=4.9
 pillow>=10.3
 numpy>=1.26
 httpx>=0.27
+pymupdf>=1.24                        # PDF rasterization for the dossier engine
 
 # --- Optional provider SDKs ------------------------------------------------
 # Install only the ones matching EXTRACTOR_PROVIDER and VLM_PROVIDER.
 # Every adapter imports its SDK lazily, so an uninstalled provider costs nothing.
-openai>=1.40                         # VLM_PROVIDER=openai
+openai>=1.40                         # VLM_PROVIDER=openai or azure_foundry
 anthropic>=0.34                      # VLM_PROVIDER=anthropic
 azure-ai-documentintelligence>=1.0.0 # EXTRACTOR_PROVIDER=azure
+azure-identity>=1.17                 # Managed Identity for azure / azure_foundry
 boto3>=1.34                          # EXTRACTOR_PROVIDER=aws
 google-cloud-documentai>=2.29        # EXTRACTOR_PROVIDER=google
 

@@ -383,6 +383,64 @@ INVOICE_FIELD_RULES: tuple[FieldRule, ...] = (
     ),
 )
 
+PROOF_OF_ADDRESS_FIELD_RULES: tuple[FieldRule, ...] = (
+    FieldRule(
+        field="holder_name",
+        check=lambda value: matches(NON_EMPTY_NAME_PATTERN, value),
+        expected_format="a name of 2 to 120 alphabetic characters",
+    ),
+    FieldRule(
+        field="address",
+        # An address that fits in fewer than ten characters is a fragment, not a
+        # location, and is the single most common silent OCR truncation here.
+        check=lambda value: len(value.strip()) >= 10,
+        expected_format="a full street address of at least 10 characters",
+    ),
+    FieldRule(
+        field="postal_code",
+        check=lambda value: matches(MEXICAN_POSTAL_CODE_PATTERN, value),
+        expected_format="a five digit postal code",
+    ),
+    FieldRule(
+        field="issue_date",
+        check=is_valid_date,
+        expected_format="a calendar date such as 31/01/2026",
+    ),
+    FieldRule(
+        field="service_provider",
+        check=lambda value: len(value.strip()) >= 2,
+        expected_format="a non empty service provider name",
+        required=False,
+    ),
+    FieldRule(
+        field="account_number",
+        check=lambda value: 1 <= len(value.strip()) <= 40,
+        expected_format="a non empty account number of at most 40 characters",
+        required=False,
+    ),
+)
+
+
+def check_proof_of_address_dates(data: Mapping[str, Any]) -> dict[str, str]:
+    """Verify that the issue date is not in the future.
+
+    Recency is a policy question that belongs to the caller, so no maximum age is
+    enforced here; a date printed in the future, on the other hand, is always a
+    misread and is exactly what a targeted re-read can fix.
+    """
+    issue_date = parse_date(data.get("issue_date"))
+    if issue_date is None:
+        return {}
+    if issue_date > date.today():
+        return {
+            "issue_date": (
+                f"The issue date {issue_date.isoformat()} is in the future, which is "
+                f"impossible for an already issued document."
+            )
+        }
+    return {}
+
+
 ID_CARD_DOCUMENT_RULES: tuple[DocumentRule, ...] = (
     DocumentRule(name="birth_date_in_past", check=check_birth_date_in_past),
     DocumentRule(name="curp_birth_date_consistency", check=check_curp_matches_birth_date),
@@ -395,14 +453,25 @@ INVOICE_DOCUMENT_RULES: tuple[DocumentRule, ...] = (
     DocumentRule(name="invoice_dates", check=check_invoice_dates),
 )
 
+PROOF_OF_ADDRESS_DOCUMENT_RULES: tuple[DocumentRule, ...] = (
+    DocumentRule(name="proof_of_address_dates", check=check_proof_of_address_dates),
+)
+
 FIELD_RULES_BY_DOC_TYPE: dict[str, tuple[FieldRule, ...]] = {
     "ine": ID_CARD_FIELD_RULES,
     "ife": ID_CARD_FIELD_RULES,
     "id": ID_CARD_FIELD_RULES,
     "idcard": ID_CARD_FIELD_RULES,
     "iddocument": ID_CARD_FIELD_RULES,
+    # Dossier level tokens produced by the semantic clustering step.
+    "inefront": ID_CARD_FIELD_RULES,
+    "ineback": ID_CARD_FIELD_RULES,
+    "inecombined": ID_CARD_FIELD_RULES,
     "invoice": INVOICE_FIELD_RULES,
     "factura": INVOICE_FIELD_RULES,
+    "proofofaddress": PROOF_OF_ADDRESS_FIELD_RULES,
+    "comprobantededomicilio": PROOF_OF_ADDRESS_FIELD_RULES,
+    "utilitybill": PROOF_OF_ADDRESS_FIELD_RULES,
 }
 
 DOCUMENT_RULES_BY_DOC_TYPE: dict[str, tuple[DocumentRule, ...]] = {
@@ -411,8 +480,14 @@ DOCUMENT_RULES_BY_DOC_TYPE: dict[str, tuple[DocumentRule, ...]] = {
     "id": ID_CARD_DOCUMENT_RULES,
     "idcard": ID_CARD_DOCUMENT_RULES,
     "iddocument": ID_CARD_DOCUMENT_RULES,
+    "inefront": ID_CARD_DOCUMENT_RULES,
+    "ineback": ID_CARD_DOCUMENT_RULES,
+    "inecombined": ID_CARD_DOCUMENT_RULES,
     "invoice": INVOICE_DOCUMENT_RULES,
     "factura": INVOICE_DOCUMENT_RULES,
+    "proofofaddress": PROOF_OF_ADDRESS_DOCUMENT_RULES,
+    "comprobantededomicilio": PROOF_OF_ADDRESS_DOCUMENT_RULES,
+    "utilitybill": PROOF_OF_ADDRESS_DOCUMENT_RULES,
 }
 
 
