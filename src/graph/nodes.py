@@ -50,7 +50,7 @@ def build_preprocess_node(policy: WorkflowPolicy) -> NodeCallable:
         if not image_bytes:
             return {
                 "is_readable": False,
-                "status": DocumentStatus.EXTRACTION_FAILED,
+                "status": DocumentStatus.EXTRACTION_FAILED.value,
                 "errors": [*state.get("errors", []), "The input image payload is empty."],
             }
 
@@ -60,7 +60,7 @@ def build_preprocess_node(policy: WorkflowPolicy) -> NodeCallable:
             LOGGER.exception("Preprocessing failed")
             return {
                 "is_readable": False,
-                "status": DocumentStatus.EXTRACTION_FAILED,
+                "status": DocumentStatus.EXTRACTION_FAILED.value,
                 "errors": [*state.get("errors", []), f"Preprocessing failed: {error}"],
             }
 
@@ -83,7 +83,7 @@ def build_preprocess_node(policy: WorkflowPolicy) -> NodeCallable:
                 "original_image_bytes": result.original_bytes,
                 "blur_variance": result.blur_variance,
                 "is_readable": False,
-                "status": DocumentStatus.REJECTED_BLUR,
+                "status": DocumentStatus.REJECTED_BLUR.value,
                 "preprocessing_report": report,
             }
 
@@ -92,7 +92,7 @@ def build_preprocess_node(policy: WorkflowPolicy) -> NodeCallable:
             "original_image_bytes": result.original_bytes,
             "blur_variance": result.blur_variance,
             "is_readable": True,
-            "status": DocumentStatus.PROCESSING,
+            "status": DocumentStatus.PROCESSING.value,
             "preprocessing_report": report,
         }
 
@@ -114,7 +114,7 @@ def build_extraction_node(extractor: DocumentExtractorPort) -> NodeCallable:
         except ExtractionError as error:
             LOGGER.error("Extraction failed: %s", error)
             return {
-                "status": DocumentStatus.EXTRACTION_FAILED,
+                "status": DocumentStatus.EXTRACTION_FAILED.value,
                 "errors": [*state.get("errors", []), str(error)],
             }
 
@@ -124,7 +124,7 @@ def build_extraction_node(extractor: DocumentExtractorPort) -> NodeCallable:
         except ValidationError as error:
             LOGGER.error("The provider payload does not fit %s: %s", schema_cls.__name__, error)
             return {
-                "status": DocumentStatus.EXTRACTION_FAILED,
+                "status": DocumentStatus.EXTRACTION_FAILED.value,
                 "errors": [
                     *state.get("errors", []),
                     f"Could not map the {result.provider} payload onto {schema_cls.__name__}: {error}",
@@ -137,7 +137,7 @@ def build_extraction_node(extractor: DocumentExtractorPort) -> NodeCallable:
         return {
             "extracted_data": document.to_flat_dict(),
             "bounding_boxes": bounding_boxes,
-            "status": DocumentStatus.PROCESSING,
+            "status": DocumentStatus.PROCESSING.value,
             "provider_metadata": {
                 "provider": result.provider,
                 "schema": schema_cls.__name__,
@@ -172,7 +172,7 @@ def build_validation_node(policy: WorkflowPolicy) -> NodeCallable:
             return {
                 "validation_errors": {},
                 "failed_fields": [],
-                "status": DocumentStatus.VALIDATED,
+                "status": DocumentStatus.VALIDATED.value,
             }
 
         failed_fields = sorted(errors)
@@ -187,7 +187,7 @@ def build_validation_node(policy: WorkflowPolicy) -> NodeCallable:
             "validation_errors": errors,
             "failed_fields": failed_fields,
             "retry_count": retry_count,
-            "status": DocumentStatus.PROCESSING,
+            "status": DocumentStatus.PROCESSING.value,
         }
 
     return validation_node
@@ -268,7 +268,7 @@ def build_crop_and_vlm_retry_node(
             "extracted_data": extracted_data,
             "flagged_fields": sorted(flagged_fields),
             "errors": run_errors,
-            "status": DocumentStatus.PROCESSING,
+            "status": DocumentStatus.PROCESSING.value,
         }
 
     return crop_and_vlm_retry_node
@@ -388,7 +388,7 @@ def _apply_human_review(
             "corrections": corrections,
             "unresolved_errors": remaining_errors,
         },
-        "status": DocumentStatus.VALIDATED if resolved else DocumentStatus.HUMAN_REVIEW_REQUIRED,
+        "status": DocumentStatus.VALIDATED.value if resolved else DocumentStatus.HUMAN_REVIEW_REQUIRED.value,
     }
 
 

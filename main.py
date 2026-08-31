@@ -8,6 +8,16 @@ Examples:
 
 from __future__ import annotations
 
+import truststore
+
+# Make every ssl.SSLContext (httpx, openai, anthropic, boto3, google-api-core)
+# verify against the OS certificate store instead of the bundled certifi CAs.
+# This must run before any HTTP client is constructed: on machines where a
+# corporate proxy or endpoint security agent performs TLS interception, the
+# interception root CA is trusted by Windows but absent from certifi, which
+# otherwise fails every outbound call with SSLCertVerificationError.
+truststore.inject_into_ssl()
+
 import argparse
 import json
 import logging
@@ -15,6 +25,8 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.domain.state import DocumentStatus
 from src.graph.workflow import compile_workflow, resume_document, run_document
@@ -26,6 +38,12 @@ LOGGER = logging.getLogger("ImageExtractor")
 
 # Keys that must never be printed: they hold raw image payloads.
 _BINARY_STATE_KEYS = frozenset({"image_bytes", "original_image_bytes"})
+
+# Suspended runs must survive between separate CLI invocations (--image today,
+# --resume in a later process), so the CLI needs a checkpointer backed by a
+# file rather than compile_workflow()'s in-memory default, which is emptied
+# the moment this process exits.
+CHECKPOINT_DB_PATH = Path(__file__).resolve().parent / "checkpoints.sqlite3"
 
 
 def _configure_logging(level: str) -> None:
@@ -56,6 +74,18 @@ def _parse_corrections(raw_corrections: list[str]) -> dict[str, str]:
         field_name, value = item.split("=", 1)
         corrections[field_name.strip()] = value.strip()
     return corrections
+
+
+def _has_suspended_run(compiled_workflow: Any, thread_id: str) -> bool:
+    """True when the checkpointer actually holds a suspended run for this thread.
+
+    Resuming an unknown thread does not raise: LangGraph just starts a fresh
+    run from START with an empty state, which then fails deep inside the graph
+    with a confusing error instead of a clear "nothing to resume" message.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    snapshot = compiled_workflow.get_state(config)
+    return bool(snapshot.values)
 
 
 def _report_interrupt(compiled_workflow: Any, thread_id: str) -> bool:
@@ -126,37 +156,42 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Configuration error: {error}") from error
 
     try:
-        # NOTE: the default in memory checkpointer only lives as long as this
-        # process, so --resume works within a session. Wire a durable
-        # checkpointer to resume across restarts.
-        workflow = compile_workflow(dependencies)
+        with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
+            workflow = compile_workflow(dependencies, checkpointer=checkpointer)
 
-        if args.resume:
-            thread_id = args.resume
-            final_state = resume_document(
-                workflow,
-                thread_id=thread_id,
-                approved=args.approve,
-                corrections=_parse_corrections(args.correct),
-            )
-        else:
-            image_path: Path = args.image
-            if not image_path.is_file():
-                raise SystemExit(f"Image not found: {image_path}")
-            thread_id = args.thread_id or f"doc-{uuid.uuid4().hex[:12]}"
-            final_state = run_document(
-                workflow,
-                image_bytes=image_path.read_bytes(),
-                doc_type=args.doc_type,
-                thread_id=thread_id,
-            )
+            if args.resume:
+                thread_id = args.resume
+                if not _has_suspended_run(workflow, thread_id):
+                    raise SystemExit(
+                        f"No suspended run found for thread {thread_id!r} in "
+                        f"{CHECKPOINT_DB_PATH.name}. It may already be finished, the "
+                        f"thread id may be mistyped, or it was created against a "
+                        f"different checkpoint database."
+                    )
+                final_state = resume_document(
+                    workflow,
+                    thread_id=thread_id,
+                    approved=args.approve,
+                    corrections=_parse_corrections(args.correct),
+                )
+            else:
+                image_path: Path = args.image
+                if not image_path.is_file():
+                    raise SystemExit(f"Image not found: {image_path}")
+                thread_id = args.thread_id or f"doc-{uuid.uuid4().hex[:12]}"
+                final_state = run_document(
+                    workflow,
+                    image_bytes=image_path.read_bytes(),
+                    doc_type=args.doc_type,
+                    thread_id=thread_id,
+                )
 
-        if _report_interrupt(workflow, thread_id):
-            return 2
+            if _report_interrupt(workflow, thread_id):
+                return 2
 
-        print(json.dumps(_printable_state(final_state), indent=2, ensure_ascii=False, default=str))
-        status = final_state.get("status")
-        return 0 if status == DocumentStatus.VALIDATED else 1
+            print(json.dumps(_printable_state(final_state), indent=2, ensure_ascii=False, default=str))
+            status = final_state.get("status")
+            return 0 if status == DocumentStatus.VALIDATED else 1
     finally:
         dependencies.close()
 

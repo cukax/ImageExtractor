@@ -244,7 +244,13 @@ the practical payoff of the port abstraction.
 ## 8. Production notes
 
 * **Checkpointer.** `compile_workflow()` defaults to an in memory saver, which
-  loses suspended runs on restart. Pass a durable one for real deployments:
+  loses suspended runs the moment the process exits — fine for a library call
+  that runs and resumes in the same process, but not for the CLI, where
+  `--image` and `--resume` are necessarily separate invocations. `main.py`
+  therefore passes an explicit `SqliteSaver` backed by `checkpoints.sqlite3`
+  (created next to `main.py`, already gitignored), so a run that escalates to
+  human review can be resumed from a later invocation, or after a restart.
+  Multi-instance deployments need a server backed saver instead:
 
   ```python
   from langgraph.checkpoint.postgres import PostgresSaver

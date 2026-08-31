@@ -113,7 +113,7 @@ def initial_state(
         "retry_count": 0,
         "is_readable": True,
         "blur_variance": 0.0,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.PROCESSING.value,
         "preprocessing_report": {},
         "provider_metadata": {},
         "human_review_payload": {},
