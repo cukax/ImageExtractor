@@ -260,7 +260,7 @@ Exit codes: `0` validated, `1` not validated, `2` waiting for a human.
 Or run a whole dossier, headlessly:
 
 ```bash
-python main.py --dossier ./samples/kyc.pdf --dossier-id DOSSIER_2026_99482
+python main.py --dossier ./samples/kyc.pdf --id DOSSIER_2026_99482
 ```
 
 It prints the master JSON contract and exits `0` when every document succeeded,

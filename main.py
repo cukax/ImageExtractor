@@ -11,7 +11,7 @@ Examples:
     python main.py --image ./samples/ine_front.jpg --doc-type INE
     python main.py --image ./samples/invoice.png --doc-type Invoice --thread-id inv-001
     python main.py --resume inv-001 --approve --correct total_amount=1432.09
-    python main.py --dossier ./samples/kyc.pdf --dossier-id DOSSIER_2026_99482
+    python main.py --dossier ./samples/kyc.pdf --id DOSSIER_2026_99482
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to a multi-document PDF, processed headlessly in parallel.",
     )
     parser.add_argument(
-        "--dossier-id",
+        "--id",
         default=None,
         help="Identifier prefixed to every doc_id; generated when omitted.",
     )
