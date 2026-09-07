@@ -23,8 +23,16 @@ from .models import BBoxTuple
 
 
 class PageType(StrEnum):
-    """Label the page classifier assigns to a single rasterized page."""
+    """Label the page classifier assigns to a single rasterized page.
 
+    ``INE_COMBINED`` covers the single-page case: a photocopy that already shows
+    both the front and the back of the same card side by side or stacked, which
+    is common in KYC scans. It is a page type in its own right rather than a
+    pairing outcome, and it sits alongside :attr:`INE_FRONT` / :attr:`INE_BACK`,
+    which remain for a card split across two separate pages.
+    """
+
+    INE_COMBINED = "INE_COMBINED"
     INE_FRONT = "INE_FRONT"
     INE_BACK = "INE_BACK"
     PASSPORT = "PASSPORT"
@@ -37,9 +45,9 @@ class PageType(StrEnum):
 class LogicalDocType(StrEnum):
     """Type of a logical document, after the semantic clustering step.
 
-    The only value that is not also a :class:`PageType` is ``INE_COMBINED``: it is
-    produced by pairing a front page with its back page, which may sit anywhere
-    else in the dossier.
+    ``INE_COMBINED`` is reached two ways: the classifier assigns it directly to a
+    single page that already shows both sides, or the clustering step pairs a
+    front page with its back page found elsewhere in the dossier.
     """
 
     INE_COMBINED = "INE_COMBINED"

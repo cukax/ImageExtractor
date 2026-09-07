@@ -199,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.dossier:
-            return _run_dossier_mode(dependencies, args.dossier, args.dossier_id)
+            return _run_dossier_mode(dependencies, args.dossier, args.id)
 
         with SqliteSaver.from_conn_string(str(CHECKPOINT_DB_PATH)) as checkpointer:
             workflow = compile_workflow(dependencies, checkpointer=checkpointer)

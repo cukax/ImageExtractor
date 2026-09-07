@@ -141,8 +141,13 @@ PAGE_CLASSIFICATION_USER_PROMPT_TEMPLATE = """Classify this page into exactly on
 {allowed_types}
 
 Guidance:
-- INE_FRONT carries the photograph, the full name and the CURP.
-- INE_BACK carries the machine readable zone, a barcode, or a plain reverse layout.
+- INE_COMBINED is a single page showing BOTH the front (photograph, full name, CURP)
+  AND the back (machine readable zone, barcode) of the same ID together, side by side
+  or stacked. This is common in one-page photocopies made for KYC.
+- INE_FRONT carries ONLY the photograph, the full name and the CURP, with no MRZ or
+  barcode visible on the same page.
+- INE_BACK carries ONLY the machine readable zone, a barcode, or a plain reverse
+  layout, with no photograph or CURP visible on the same page.
 - PROOF_OF_ADDRESS is a utility bill or bank statement showing a service address.
 - INVOICE is a commercial document with a subtotal, a tax amount and a total.
 - Use UNKNOWN when the page matches none of the above, or is blank.
